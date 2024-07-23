@@ -192,7 +192,7 @@ fn player_select(game_state: &mut GameState) {
     }
 }
 
-fn computer_select(game_state: &mut GameState) {
+fn computer_select(game_state: &mut GameState, global_hash: &mut HashMap<u64, (isize, usize)>) {
     let moves = game_state.get_possible_moves();
     if moves.len() == 0 {
         println!("Passing turn - no moves available");
@@ -200,53 +200,152 @@ fn computer_select(game_state: &mut GameState) {
         return;
     }
 
-    // let len = moves.len();
-    // game_state.apply_move(moves.into_iter().nth(thread_rng().gen_range(0..len)).unwrap());
+    if game_state.turn() {
+        let len = moves.len();
+        game_state.apply_move(moves.into_iter().nth(thread_rng().gen_range(0..len)).unwrap());
+        return;
+    }
 
+    let mut counter: u64 = 0;
 
+    const MAX_DEPTH: usize = 6;
+
+    let best_move = moves.into_iter()
+        .fold(
+            (if game_state.turn() { isize::MIN } else { isize::MAX }, Move::Move(HexCoord::new(0, 0), HexCoord::new(0, 0))), // Move never used
+            |(best_score, current_m), m| {
+                let turn = game_state.turn();
+                game_state.apply_move(m.clone());
+
+                let score = if turn {
+                    minimax(game_state, 0, MAX_DEPTH, best_score, isize::MAX, global_hash, &mut counter)
+                }
+                else {
+                    minimax(game_state, 0, MAX_DEPTH, isize::MIN, best_score, global_hash, &mut counter)
+                };
+
+                if game_state.turn_count() > 7 {
+                    global_hash.insert(game_state.get_hash(), (score, MAX_DEPTH + 1));
+                }
+
+                game_state.undo_move(m.clone());
+
+                // LE / GE necessary to prevent default move from being used
+                if (game_state.turn() && score >= best_score) || (!game_state.turn() && score <= best_score) {
+                    (score, m)
+                }
+                else {
+                    (best_score, current_m)
+                }
+            }
+        ).1;
+
+    println!("Searched: {counter}");
+
+    debug_assert!(
+        match &best_move {
+            Move::Place(_, _) => { true }
+            Move::Move(a, b) => {
+                a != b
+            }
+        }
+    );
+
+    game_state.apply_move(best_move);
+
+    println!("Score: {}", game_state.score().0);
 }
 
-fn minimax(mut current_state: GameState, maximising: bool, depth: usize, max_depth: usize, max: isize, min: isize) -> (isize, Option<Move>) {
+fn get_score(score: (isize, bool, bool)) -> isize {
+    if score.1 && score.2 {
+        return 0;
+    }
+    if score.1 {
+        return isize::MAX;
+    }
+    else if score.2 {
+        return isize::MIN;
+    }
+    score.0
+}
+
+fn minimax(current_state: &mut GameState, depth: usize, max_depth: usize, mut alpha: isize, mut beta: isize, global_hash: &mut HashMap<u64, (isize, usize)>, counter: &mut u64) -> isize {
+    *counter += 1;
+    let turn = current_state.turn();
     let moves = current_state.get_possible_moves();
 
     if moves.len() == 0 {
-
-    }
-
-    let mut best = None;
-    let mut worst = None;
-    for (i, m) in moves.into_iter().enumerate() {
-        let mut new_state = current_state.clone();
-        new_state.apply_move(m);
-        let score = if depth == max_depth {
-            new_state.score().0
+        current_state.pass();
+        let hash = current_state.get_hash();
+        let found = global_hash.get(&hash);
+        let score = if found.is_some() && found.unwrap().1 >= max_depth - depth {
+            found.unwrap().0
         }
         else {
-            minimax(new_state, maximising, depth + 1, max_depth, best, worst).0
+            if depth == max_depth {
+                // Evaluate board at final depth
+                get_score(current_state.score())
+            }
+            else {
+                let score = minimax(current_state, depth + 1, max_depth, alpha, beta, global_hash, counter);
+                if current_state.turn_count() > 7 {
+                    global_hash.insert(hash, (score, max_depth - depth));
+                }
+                score
+            }
         };
-        if let Some((c_b, _)) = best {
-            if score > c_b {
-                best = Some((score, i));
-            }
+        current_state.unpass();
+
+        return score;
+    }
+
+    let mut best = if current_state.turn() { isize::MIN } else { isize::MAX };
+    for m in moves.into_iter() {
+        current_state.apply_move(m.clone());
+
+        let hash = current_state.get_hash();
+        let found = global_hash.get(&hash);
+        let score = if found.is_some() && found.unwrap().1 >= max_depth - depth {
+            found.unwrap().0
         }
         else {
-            best = Some((score, i));
+            if depth == max_depth {
+                // Evaluate board at final depth
+                get_score(current_state.score())
+            }
+            else {
+                let score = minimax(current_state, depth + 1, max_depth, alpha, beta, global_hash, counter);
+                if current_state.turn_count() > 7 {
+                    global_hash.insert(hash, (score, max_depth - depth));
+                }
+                score
+            }
+        };
+
+        current_state.undo_move(m.clone());
+
+        if turn {
+            if score == isize::MAX { return score; }
+            best = best.max(score);
+            alpha = best.max(score);
+        }
+        else {
+            if score == isize::MIN { return score; }
+            best = best.min(score);
+            beta = beta.min(score);
         }
 
-        if let Some((c_w, _)) = worst {
-            if score < c_w {
-                worst = Some((score, i));
-            }
-        }
-        else {
-            worst = Some((score, i));
+        if beta <= alpha {
+            break;
         }
     }
 
-
+    best
 }
 
 fn main() {
+    let mut global_hash_scores = HashMap::new();
+
     let mut game = GameState::new();
     loop {
         game.print();
@@ -266,13 +365,18 @@ fn main() {
             break;
         }
 
-        println!("Turn: {}\n", if game.turn() { "Cyan" } else { "Green" });
+        println!("Turn: {} [{}]\n", if game.turn() { "Cyan" } else { "Green" }, game.turn_count());
+
+        // stdout().flush().unwrap();
+        // stdin().read_line(&mut String::new()).unwrap();
+
+        println!("Working...");
 
         if game.turn() {
-            computer_select(&mut game);
+            computer_select(&mut game, &mut global_hash_scores);
         }
         else {
-            computer_select(&mut game);
+            computer_select(&mut game, &mut global_hash_scores);
         }
     }
 }

@@ -1,22 +1,6 @@
-use variant_count::VariantCount;
-use derive_getters::Getters;
+use crate::tile_types::TileType;
 
-#[derive(VariantCount, Clone, Copy)]
-pub enum TileType {
-    Queen,
-    Ant,
-}
-
-impl TileType {
-    pub fn character(&self) -> char {
-        match self {
-            TileType::Queen => 'Q',
-            TileType::Ant => 'A'
-        }
-    }
-}
-
-#[derive(Getters)]
+#[derive(Clone, Hash)]
 pub struct HiveTile {
     team: bool,
     tile_type: TileType,
@@ -40,4 +24,8 @@ impl HiveTile {
             &self
         }
     }
+
+    pub fn team(&self) -> bool { self.team }
+
+    pub fn tile_type(&self) -> TileType { self.tile_type }
 }
